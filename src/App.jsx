@@ -1,21 +1,42 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { supabase } from './supabaseClient';
-import ReportPage from './ReportGenerate'; // Update import path
+import ReportPage from './ReportGenerate';
 import AgentsPage from './components/AgentsPage.jsx';
-import {
-  infrastructureTeam,
-  aiTeam,
-  infrastructureTask,
-  aiTask,
-  infrastructureAgent,
-  aiAgent
-} from './routes.js';
 import './App.css';
 
 const MAX_POST_LENGTH = 5000;
 const MAX_COMMENT_LENGTH = 2000;
 const MAX_SEARCH_LENGTH = 200;
 
+// Generate or retrieve a stable session ID for the browser
+const getSessionId = () => {
+  let id = localStorage.getItem('mass-dialogue-session-id');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('mass-dialogue-session-id', id);
+  }
+  return id;
+};
+
+const SESSION_ID = getSessionId();
+const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3001';
+
+async function apiCall(path, options = {}) {
+  const url = `${API_BASE}${path}`;
+  try {
+    const response = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+      ...options,
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(data?.error || 'Request failed');
+    }
+    return data;
+  } catch (err) {
+    console.error(`API call to ${path} failed:`, err);
+    throw err;
+  }
+}
 
 function App() {
   const [posts, setPosts] = useState([]);
@@ -24,55 +45,54 @@ function App() {
   const [userUpvotedPosts, setUserUpvotedPosts] = useState({});
   const [filterKeyword, setFilterKeyword] = useState('');
   const [sortBy, setSortBy] = useState('created_at');
+  const [loadingPosts, setLoadingPosts] = useState(false);
 
-  // 🚀 Fetch Posts from Supabase
+  // Fetch Posts from API
   const fetchPosts = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*');
-
-    if (error) console.error('Error fetching posts:', error);
-    else {
+    setLoadingPosts(true);
+    try {
+      const data = await apiCall('/api/posts');
       let filteredData = data;
 
-      // Apply filter if filterKeyword exists
       if (filterKeyword) {
         filteredData = data.filter((post) =>
           post.text.toLowerCase().includes(filterKeyword.toLowerCase())
         );
       }
 
-      // Sort the data based on sortBy
       if (sortBy === 'created_at') {
-        filteredData = filteredData.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        filteredData = filteredData.sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        );
       } else if (sortBy === 'upvotes') {
         filteredData = filteredData.sort((a, b) => b.upvotes - a.upvotes);
       }
 
       setPosts(filteredData);
 
+      // Fetch vote status for all posts
+      const voteStatuses = await Promise.all(
+        filteredData.map((post) =>
+          apiCall(`/api/posts/${post.id}/vote-status?sessionId=${SESSION_ID}`)
+            .then((res) => ({ [post.id]: res.voted }))
+            .catch(() => ({ [post.id]: false }))
+        )
+      );
+      const merged = Object.assign({}, ...voteStatuses);
+      setUserUpvotedPosts(merged);
+    } catch (err) {
+      console.error('Error fetching posts:', err);
+      alert('Failed to load posts. Please refresh the page.');
+    } finally {
+      setLoadingPosts(false);
     }
   }, [filterKeyword, sortBy]);
 
   useEffect(() => {
     fetchPosts();
+  }, [fetchPosts]);
 
-    // ✅ Subscribe to real-time updates for posts
-    const postsSubscription = supabase
-      .channel('posts-channel')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'messages' },
-        fetchPosts
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(postsSubscription);
-    };
-  }, [fetchPosts]); // Re-fetch posts when fetchPosts changes (i.e. when filterKeyword or sortBy changes)
-
-  // 🚀 Submit a New Post
+  // Submit a New Post
   const handleSubmitPost = async (e) => {
     e.preventDefault();
     const trimmed = newPost.trim();
@@ -81,38 +101,40 @@ function App() {
       alert(`Post must be under ${MAX_POST_LENGTH} characters.`);
       return;
     }
-    const { error } = await supabase
-      .from('messages')
-      .insert([{ text: trimmed, upvotes: 0 }]);
-
-    if (error) {
-      console.error('Error adding post:', error);
-    } else {
+    try {
+      await apiCall('/api/posts', {
+        method: 'POST',
+        body: JSON.stringify({ text: trimmed }),
+      });
       setNewPost('');
+      fetchPosts();
+    } catch (err) {
+      alert('Failed to create post. Please try again.');
     }
   };
 
-  // 🚀 Handle Upvote Toggle (Upvote/Remove Upvote)
+  // Handle Upvote Toggle — now goes through server with session tracking
   const handleVote = async (postId) => {
-    const post = posts.find((post) => post.id === postId);
-    if (!post) return;
+    if (userUpvotedPosts[postId]) return; // Already voted, can't unvote
 
-    const hasUpvoted = userUpvotedPosts[postId] || false; // Check if user has upvoted
-    const newUpvotes = hasUpvoted ? post.upvotes - 1 : post.upvotes + 1; // Toggle upvote
+    try {
+      await apiCall(`/api/posts/${postId}/vote`, {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: SESSION_ID }),
+      });
 
-    const { error } = await supabase
-      .from('messages')
-      .update({ upvotes: newUpvotes })
-      .eq('id', postId);
-
-    if (error) {
-      console.error('Error updating votes:', error);
-      alert('Failed to update vote. Please try again.');
-    } else {
-      setUserUpvotedPosts((prev) => ({
-        ...prev,
-        [postId]: !hasUpvoted, // Toggle local state
-      }));
+      setUserUpvotedPosts((prev) => ({ ...prev, [postId]: true }));
+      setPosts((prev) =>
+        prev.map((post) =>
+          post.id === postId ? { ...post, upvotes: post.upvotes + 1 } : post
+        )
+      );
+    } catch (err) {
+      if (err.message === 'Already voted on this post.') {
+        setUserUpvotedPosts((prev) => ({ ...prev, [postId]: true }));
+      } else {
+        alert('Failed to record vote. Please try again.');
+      }
     }
   };
 
@@ -141,8 +163,6 @@ function App() {
           </button>
         </div>
 
-
-        {/* Conditionally render the search-filter-container based on active tab */}
         {activeTab === 'forum' && (
           <div className="search-filter-container">
             <input
@@ -184,7 +204,7 @@ function App() {
                   {newPost.length}/{MAX_POST_LENGTH}
                 </span>
                 <div className="post-form-buttons">
-                  <button type="submit">Post Message</button>
+                  <button type="submit" disabled={loadingPosts}>Post Message</button>
                   <button
                     type="button"
                     onClick={() => setActiveTab('agents')}
@@ -210,11 +230,11 @@ function App() {
                     <div className="vote-buttons">
                       <button
                         onClick={() => handleVote(post.id)}
-                        className={`vote-button upvote-button ${userUpvotedPosts[post.id] ? 'active' : ''
-                          }`}
-                        title="Toggle Upvote"
+                        className={`vote-button upvote-button ${userUpvotedPosts[post.id] ? 'active' : ''}`}
+                        title={userUpvotedPosts[post.id] ? 'Already voted' : 'Toggle Upvote'}
+                        disabled={userUpvotedPosts[post.id]}
                         style={{
-                          color: userUpvotedPosts[post.id] ? '#2ecc71' : '#888', // Green when upvoted, Gray otherwise
+                          color: userUpvotedPosts[post.id] ? '#2ecc71' : '#888',
                         }}
                       >
                         ↑
@@ -222,15 +242,14 @@ function App() {
                       <span
                         className="vote-count upvote-count"
                         style={{
-                          color: userUpvotedPosts[post.id] ? '#2ecc71' : '#888', // Green when upvoted, Gray otherwise
+                          color: userUpvotedPosts[post.id] ? '#2ecc71' : '#888',
                         }}
                       >
                         {post.upvotes}
                       </span>
                     </div>
                   </div>
-                  {/* ✅ Comment Section for Each Post */}
-                  <CommentSection postId={post.id} fetchPosts={fetchPosts} />
+                  <CommentSection postId={post.id} />
                 </div>
               ))}
             </div>
@@ -245,43 +264,23 @@ function App() {
   );
 }
 
-// 🚀 COMMENT SYSTEM
-function CommentSection({ postId, fetchPosts }) {
+// Comment System
+function CommentSection({ postId }) {
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState('');
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // 🚀 Fetch Comments for the Post
   const fetchComments = async () => {
-    const { data, error } = await supabase
-      .from('comments')
-      .select('*')
-      .eq('post_id', postId)
-      .order('created_at', { ascending: true });
-
-    if (error) console.error('Error fetching comments:', error);
-    else setComments(data || []);
+    const data = await apiCall(`/api/posts/${postId}/comments`);
+    setComments(data || []);
   };
 
   useEffect(() => {
-    fetchComments();
+    if (isExpanded) {
+      fetchComments();
+    }
+  }, [isExpanded, postId]);
 
-    // ✅ Subscribe to real-time updates for comments
-    const commentsSubscription = supabase
-      .channel(`comments-channel-${postId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'comments', filter: `post_id=eq.${postId}` },
-        fetchComments
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(commentsSubscription);
-    };
-  }, [postId]);
-
-  // 🚀 Add New Comment (Auto-Refresh)
   const handleSubmitComment = async (e) => {
     e.preventDefault();
     const trimmed = newComment.trim();
@@ -290,13 +289,15 @@ function CommentSection({ postId, fetchPosts }) {
       alert(`Comment must be under ${MAX_COMMENT_LENGTH} characters.`);
       return;
     }
-    const { error } = await supabase
-      .from('comments')
-      .insert([{ post_id: postId, text: trimmed }]);
-
-    if (error) console.error('Error adding comment:', error);
-    else {
+    try {
+      await apiCall(`/api/posts/${postId}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ text: trimmed }),
+      });
       setNewComment('');
+      fetchComments();
+    } catch (err) {
+      alert('Failed to post comment. Please try again.');
     }
   };
 
