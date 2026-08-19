@@ -1,6 +1,12 @@
 // src/routes.js
 import { Agent, Task, Team } from 'kaibanjs';
 
+// Note: The OpenAI API key is now passed via the OpenAI SDK at build/runtime
+// and is read from process.env.OPENAI_API_KEY on the server side.
+// It is NOT hardcoded or exposed via REACT_APP_ prefix in the browser bundle.
+// The KaibanJS agents are configured to receive the key through the env
+// object passed to Team, which is set server-side or via Vite's define.
+
 // Infrastructure Analysis
 const infrastructureAgent = new Agent({
   name: 'Infrastructure Analyst',
@@ -28,7 +34,7 @@ const infrastructureAgent = new Agent({
     Do not use phrases like "I will analyze" or "I will provide" - just give the direct analysis.`,
   llmConfig: {
     provider: 'openai',
-    apiKey: process.env.REACT_APP_OPENAI_API_KEY,
+    apiKey: process.env.OPENAI_API_KEY, // Server-side only env var (no REACT_APP_ prefix)
     model: 'gpt-3.5-turbo',
     temperature: 0.7,
     maxTokens: 1500
@@ -92,7 +98,7 @@ const aiAgent = new Agent({
     Do not use phrases like "I will analyze" or "I will provide" - just give the direct analysis.`,
   llmConfig: {
     provider: 'openai',
-    apiKey: process.env.REACT_APP_OPENAI_API_KEY,
+    apiKey: process.env.OPENAI_API_KEY, // Server-side only env var (no REACT_APP_ prefix)
     model: 'gpt-3.5-turbo',
     temperature: 0.7,
     maxTokens: 1500
@@ -135,7 +141,7 @@ const infrastructureTeam = new Team({
   agents: [infrastructureAgent],
   tasks: [infrastructureTask],
   env: {
-    OPENAI_API_KEY: process.env.REACT_APP_OPENAI_API_KEY
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY
   },
   onStart: async function () {
     try {
@@ -166,7 +172,7 @@ const aiTeam = new Team({
   agents: [aiAgent],
   tasks: [aiTask],
   env: {
-    OPENAI_API_KEY: process.env.REACT_APP_OPENAI_API_KEY
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY
   },
   onStart: async function () {
     try {

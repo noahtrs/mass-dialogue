@@ -164,18 +164,30 @@ MAX_COMMENT_LENGTH = 2000  // characters
 MAX_SEARCH_LENGTH = 200    // characters
 ```
 
+### Architecture: Two-Tier API Pattern
+
+**Browser (src/):** Uses only the SUPABASE_ANON_KEY (`REACT_APP_SUPABASE_*`) for real-time subscriptions and read-only operations. **All write operations go through the Express API server.**
+
+**Server (api/):** `api/server.js` runs an Express server that uses `SUPABASE_SERVICE_ROLE_KEY` (never exposed to browser) for all write operations. OpenAI calls are made server-side — the API key is never bundled into the client.
+
+- `api/server.js` — Express API endpoints: `/api/posts`, `/api/posts/:id/vote`, `/api/posts/:id/comments`, `/api/report`
+- `api/supabaseService.js` — Server-side DB operations with input validation
+- `supabase/migrations/` — SQL migrations for the `post_votes` table (vote tracking)
+
 ### Security Requirements
 
-- **Always sanitize user input** before rendering (HTML entity encoding — see `sanitizeInput()` in `App.jsx`)
+- **Always sanitize user input** before sending to LLMs (see `sanitizeForLLM()` in `api/supabaseService.js`)
+- **Never expose OpenAI API key** in browser code — route all OpenAI calls through `api/server.js`
 - **Never hardcode** API keys, credentials, or secrets — use environment variables
-- **Validate all user inputs** on both length and content before processing or storing
-- Use `REACT_APP_` prefix for any browser-side secrets (though ideally keep secrets server-side)
+- **Validate all user inputs** on the server side before processing or storing (see `validatePostText()`, `validateCommentText()` in `api/supabaseService.js`)
+- Use `REACT_APP_` prefix for browser-side env vars only
 
 ### Supabase Usage
 
-- Single client instance exported from `src/supabaseClient.js` — import from there, never re-initialize
+- **Browser client** (`src/supabaseClient.js`): Uses anon key for real-time subscriptions only. All writes must go through the API server.
+- **Server client** (`api/supabaseService.js`): Uses service_role key with input validation. All write operations (create post, create comment, update votes) go through Express API endpoints.
 - Real-time subscriptions should be set up in `useEffect` and cleaned up on unmount via `supabase.removeChannel()`
-- Database tables used: `messages` (posts), with nested comment data
+- Database tables: `messages` (posts), `comments` (nested under posts), `post_votes` (vote tracking)
 
 ### AI Agents (KaibanJS + routes.js)
 

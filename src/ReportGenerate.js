@@ -1,24 +1,31 @@
 import React, { useState } from 'react';
 import '../src/ReportGenerate.css';
-import { generateReport } from '../src/reportGenerator.js';
 
 function ReportPage() {
   const [report, setReport] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  
-  // Define the API key constant
-  const apiKey = process.env.REACT_APP_OPENAI_API_KEY;
+
+  const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3001';
 
   const handleGenerateReport = async () => {
     setIsLoading(true);
     setError(null);
-    
+
     try {
-      // Call the imported generateReport function
-      const reportContent = await generateReport(apiKey);
-      setReport(reportContent);
-      
+      // Call the server-side API endpoint — OpenAI key is NOT exposed to browser
+      const response = await fetch(`${API_BASE}/api/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || 'Failed to generate report');
+      }
+
+      const data = await response.json();
+      setReport(data.report);
     } catch (err) {
       console.error('Report generation error:', err);
       setError('Failed to generate report. Please try again later.');
